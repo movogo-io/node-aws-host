@@ -4,14 +4,14 @@ import {
     LogEntry,
     LogTransport,
     type EventTransport,
-} from '@riddance/host/context'
-import { FullConfiguration, Metadata } from '@riddance/host/registry'
-import type { Environment } from '@riddance/service/context'
+} from '@movogo-io/host/context'
+import { FullConfiguration, Metadata } from '@movogo-io/host/registry'
+import type { Attribution, Environment } from '@movogo-io/service/context'
 import { randomUUID } from 'node:crypto'
 import { SnsEventTransport } from './lib/sns.js'
 
-export { setMeta } from '@riddance/host/registry'
-export * from '@riddance/service/context'
+export { setMeta } from '@movogo-io/host/registry'
+export * from '@movogo-io/service/context'
 
 export type AwsContext = {
     getRemainingTimeInMillis(): number
@@ -77,20 +77,26 @@ export function createAwsContext(
     config: FullConfiguration | undefined,
     meta: Metadata | undefined,
     functionArn: string,
+    attribution?: Attribution,
 ) {
     const env = {
         ...process.env,
         ...stageVariables,
     }
+    // The transport exists before the context's logger does; it warns through this sink,
+    // which is pointed at the created logger below.
+    const sink: WarnSink = {}
     const ctx = createContext(
         client,
         [consoleLogger],
-        getEventTransport(client, env, meta, functionArn),
+        getEventTransport(client, env, meta, functionArn, sink),
         timeouts,
         new AbortController(),
         config,
         meta,
         env,
+        undefined,
+        attribution,
     )
     ctx.log = ctx.log.enrichReserved({
         host: hostInfo,
@@ -100,7 +106,14 @@ export function createAwsContext(
             timeout: context.getRemainingTimeInMillis(),
         },
     })
+    sink.warn = (message, fields) => {
+        ctx.log.warn(message, undefined, fields)
+    }
     return ctx
+}
+
+export type WarnSink = {
+    warn?: (message: string, fields: { topic: string; type: string }) => void
 }
 
 function getEventTransport(
@@ -108,9 +121,10 @@ function getEventTransport(
     env: Partial<Environment>,
     meta: Metadata | undefined,
     functionArn: string,
+    sink: WarnSink,
 ) {
     try {
-        return new SnsEventTransport(client, env, meta, functionArn)
+        return new SnsEventTransport(client, env, meta, functionArn, sink)
     } catch (e) {
         return new ErrorEventTransport(e)
     }

@@ -1,8 +1,8 @@
 # Project Overview
 
-This is `@riddance/aws-host`, a TypeScript AWS Lambda host adapter for the Riddance serverless framework. It provides AWS-specific implementations for HTTP, event, timer, and context handling in Lambda functions by providing Lambda entry points that translate Lambda-specific idioms to Riddance idioms.
+This is `@movogo-io/aws-host`, a TypeScript AWS Lambda host adapter for the Riddance serverless framework. It provides AWS-specific implementations for HTTP, event, timer, and context handling in Lambda functions by providing Lambda entry points that translate Lambda-specific idioms to Riddance idioms.
 
-Though we depend on `@riddance/service` we do so to implement it, not to use it.
+Though we depend on `@movogo-io/service` we do so to implement it, not to use it.
 
 ## Core Components
 

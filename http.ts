@@ -1,10 +1,10 @@
-import { clientFromHeaders, executeRequest } from '@riddance/host/http'
-import { Json, measure } from '@riddance/host/lib/http'
-import { getHandlers } from '@riddance/host/registry'
+import { clientFromHeaders, executeRequest } from '@movogo-io/host/http'
+import { Json, measure } from '@movogo-io/host/lib/http'
+import { getHandlers } from '@movogo-io/host/registry'
 import { AwsContext, createAwsContext } from './context.js'
 
-export { setMeta } from '@riddance/host/registry'
-export * from '@riddance/service/http'
+export { setMeta } from '@movogo-io/host/registry'
+export * from '@movogo-io/service/http'
 
 type HttpResponse = {
     statusCode: string | number

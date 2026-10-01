@@ -1,10 +1,10 @@
-import { measure } from '@riddance/host/lib/timer'
-import { getHandlers } from '@riddance/host/registry'
-import { triggerTimer } from '@riddance/host/timer'
+import { measure } from '@movogo-io/host/lib/timer'
+import { getHandlers } from '@movogo-io/host/registry'
+import { triggerTimer } from '@movogo-io/host/timer'
 import { AwsContext, createAwsContext } from './context.js'
 
-export { setMeta } from '@riddance/host/registry'
-export * from '@riddance/service/timer'
+export { setMeta } from '@movogo-io/host/registry'
+export * from '@movogo-io/service/timer'
 
 // https://github.com/DefinitelyTyped/DefinitelyTyped/blob/b969f890000ff95740fd7b879cdf3b73e1ea0fe8/types/aws-lambda/trigger/eventbridge.d.ts
 

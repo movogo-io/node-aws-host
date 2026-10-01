@@ -1,28 +1,56 @@
 import { fetchOK, thrownHasStatus } from '@riddance/fetch'
-import { type ClientInfo, type EventTransport } from '@riddance/host/context'
-import type { Metadata } from '@riddance/host/registry'
-import { missing } from '@riddance/service/context'
+import { type ClientInfo, type EventTransport } from '@movogo-io/host/context'
+import type { Metadata } from '@movogo-io/host/registry'
+import { missing } from '@movogo-io/service/context'
 import { SignatureV4 } from '@smithy/signature-v4'
 import { createHash, createHmac, randomUUID, type Hash } from 'node:crypto'
+import { setTimeout } from 'node:timers/promises'
 import { brotliCompress } from 'node:zlib'
-import { type Environment, type Json } from '../context.js'
+import {
+    type Attribution,
+    type Environment,
+    type EventAttributes,
+    type Json,
+    type WarnSink,
+} from '../context.js'
+
+const publishAttemptsMax = 5
+
+/**
+Test seams only: a mock server to publish to instead of the region's SNS endpoint, and a
+shorter backoff. Production passes neither; the environment is never consulted for them.
+*/
+export type SnsTransportOptions = {
+    readonly baseUrl?: string
+    readonly retryDelayBaseMs?: number
+}
 
 export class SnsEventTransport implements EventTransport {
     readonly #attributes: { [key: string]: string }
     readonly #env: Partial<Environment>
     readonly #baseUrl: string
     readonly #baseArn: string
+    readonly #warn: WarnSink
+    readonly #retryDelayBaseMs: number
 
     constructor(
         client: ClientInfo,
         env: Partial<Environment>,
         meta: Metadata | undefined,
         functionArn: string,
+        warn: WarnSink,
+        options?: SnsTransportOptions,
     ) {
-        this.#attributes = asMessageAttributes(client)
+        // The request id a client sent is for the logs of this invocation, not for the bus:
+        // the operation id joins the two already, and an unknown attribute on the wire is one
+        // more name an emitter cannot use.
+        const { clientRequestId: _clientRequestId, ...wire } = client
+        this.#attributes = asMessageAttributes(wire)
         this.#env = env
+        this.#warn = warn
+        this.#retryDelayBaseMs = options?.retryDelayBaseMs ?? 100
         const region = env.AWS_REGION ?? missing('AWS_REGION')
-        this.#baseUrl = `https://sns.${region}.amazonaws.com`
+        this.#baseUrl = options?.baseUrl ?? `https://sns.${region}.amazonaws.com`
         const prefix =
             env.AWS_LAMBDA_FUNCTION_NAME?.slice(
                 0,
@@ -44,42 +72,82 @@ export class SnsEventTransport implements EventTransport {
             | undefined,
         messageId: string | undefined,
         signal: AbortSignal,
+        extras?: { attributes?: EventAttributes; attribution?: Attribution },
     ) {
-        try {
-            const { message, additionalAttributes } = await prepareMessage(data, this.#attributes)
+        // Wire order: client, then the attribution claim, then the emitter's attributes,
+        // then content-encoding, each numbered after all of the previous.
+        const onBehalfOf = asMessageAttributes(
+            {
+                onBehalfOfUserId: extras?.attribution?.onBehalfOf?.userId,
+                onBehalfOfOrg: extras?.attribution?.onBehalfOf?.org,
+            },
+            this.#attributes,
+        )
+        const emitter = asMessageAttributes(extras?.attributes ?? {}, {
+            ...this.#attributes,
+            ...onBehalfOf,
+        })
+        const { message, additionalAttributes } = await prepareMessage(data, {
+            ...this.#attributes,
+            ...onBehalfOf,
+            ...emitter,
+        })
+        const body = new URLSearchParams({
+            Version: '2010-03-31',
+            Action: 'Publish',
+            TopicArn: `${this.#baseArn}${topic}-${type}`,
+            Message: message ?? 'null',
+            Subject: subject,
+            MessageId: messageId ?? randomUUID().replaceAll('-', ''),
+            Type: type,
+            ...this.#attributes,
+            ...onBehalfOf,
+            ...emitter,
+            ...additionalAttributes,
+        }).toString()
 
-            await awsFetchOK(
-                this.#env,
-                this.#baseUrl,
-                {
-                    headers: {
-                        'content-type': 'application/x-www-form-urlencoded',
-                        'x-amz-date': new Date().toISOString(),
+        for (let attempt = 0; ; ++attempt) {
+            try {
+                await awsFetchOK(
+                    this.#env,
+                    this.#baseUrl,
+                    {
+                        headers: {
+                            'content-type': 'application/x-www-form-urlencoded',
+                            'x-amz-date': new Date().toISOString(),
+                        },
+                        method: 'POST',
+                        body,
+                        signal,
                     },
-                    method: 'POST',
-                    body: new URLSearchParams({
-                        Version: '2010-03-31',
-                        Action: 'Publish',
-                        TopicArn: `${this.#baseArn}${topic}-${type}`,
-                        Message: message ?? 'null',
-                        Subject: subject,
-                        MessageId: messageId ?? randomUUID().replaceAll('-', ''),
-                        Type: type,
-                        ...this.#attributes,
-                        ...additionalAttributes,
-                    }).toString(),
-                    signal,
-                },
-                'Error publishing SNS message.',
-                { topic, type, data },
-            )
-        } catch (e) {
-            if (thrownHasStatus(e, 404)) {
+                    'Error publishing SNS message.',
+                    { topic, type, data },
+                )
                 return
+            } catch (e) {
+                if (thrownHasStatus(e, 404)) {
+                    this.#warn.warn?.('Topic not found; event dropped.', { topic, type })
+                    return
+                }
+                if (attempt + 1 < publishAttemptsMax && isRetryable(e)) {
+                    signal.throwIfAborted()
+                    await setTimeout(
+                        this.#retryDelayBaseMs * 2 ** attempt +
+                            Math.random() * this.#retryDelayBaseMs,
+                        undefined,
+                        { signal },
+                    )
+                    continue
+                }
+                throw e
             }
-            throw e
         }
     }
+}
+
+function isRetryable(e: unknown) {
+    const status = (e as { response?: { status?: unknown } } | undefined)?.response?.status
+    return status === 429 || (typeof status === 'number' && status >= 500 && status <= 599)
 }
 
 async function prepareMessage(

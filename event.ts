@@ -1,12 +1,14 @@
-import type { ClientInfo } from '@riddance/host/context'
-import { handle } from '@riddance/host/event'
-import { measure, type Json } from '@riddance/host/lib/event'
-import { getHandlers } from '@riddance/host/registry'
+import { claim } from '@movogo-io/host/attribution'
+import type { ClientInfo, RootLogger } from '@movogo-io/host/context'
+import { handle } from '@movogo-io/host/event'
+import type { EventHandler } from '@movogo-io/host/event-registry'
+import { measure, type Json } from '@movogo-io/host/lib/event'
+import { getHandlers } from '@movogo-io/host/registry'
 import { brotliDecompress } from 'node:zlib'
-import { AwsContext, createAwsContext, missing } from './context.js'
+import { AwsContext, createAwsContext, missing, type Attribution } from './context.js'
 
-export { setMeta } from '@riddance/host/registry'
-export * from '@riddance/service/event'
+export { setMeta } from '@movogo-io/host/registry'
+export * from '@movogo-io/service/event'
 
 // https://github.com/DefinitelyTyped/DefinitelyTyped/blob/b969f890000ff95740fd7b879cdf3b73e1ea0fe8/types/aws-lambda/trigger/sns.d.ts
 
@@ -50,48 +52,56 @@ export async function awsHandler(event: SNSEvent, awsContext: AwsContext) {
     if (!handler) {
         throw new Error('No event handler registered.')
     }
+    const handled = await Promise.allSettled(
+        event.Records.map(r => handleRecord(r, handler, awsContext)),
+    )
+    const failed = handled.filter(e => e.status === 'rejected')
+    if (failed.length !== 0 || handled.some(e => e.status === 'fulfilled' && !e.value)) {
+        throw new AggregateError(
+            failed.map(e => e.reason as unknown),
+            'Error handling event.',
+        )
+    }
+}
+
+// Each record gets its own context: the client and the attribution restored from its
+// attributes are the record's, not the batch's.
+async function handleRecord(record: SNSEventRecord, handler: EventHandler, awsContext: AwsContext) {
     const { log, context, success, flush } = createAwsContext(
         awsContext,
         { default: 150 },
         {},
-        clientFromAttributes(event.Records[0]?.Sns.MessageAttributes),
+        clientFromAttributes(record.Sns.MessageAttributes),
         handler.config,
         handler.meta,
         awsContext.invokedFunctionArn,
+        attributionFromAttributes(record.Sns.MessageAttributes),
     )
-
-    const events = await Promise.allSettled(
-        event.Records.map(async r => ({
-            subject: r.Sns.Subject ?? missing('subject'),
-            timestamp: new Date(r.Sns.Timestamp),
-            messageId: r.Sns.MessageId,
-            event: await eventFromMessage(r.Sns.Message, r.Sns.MessageAttributes),
-        })),
-    )
-    const malformedEvents = events.filter(e => e.status === 'rejected')
-    for (const failed of malformedEvents) {
-        log.fatal('Error parsing event.', failed.reason)
+    try {
+        const options = await parseRecord(record, log)
+        try {
+            return await handle(log, context, handler, options, success)
+        } catch (e) {
+            log.fatal('Error sending event.', e)
+            throw e
+        }
+    } finally {
+        await measure(log.enrichReserved({ meta: handler.meta }), 'flush', flush)
     }
+}
 
-    const sent = await Promise.allSettled(
-        events
-            .filter(e => e.status === 'fulfilled')
-            .map(e => handle(log, context, handler, e.value, success)),
-    )
-    const notSent = sent.filter(e => e.status === 'rejected')
-    for (const failed of notSent) {
-        log.fatal('Error sending event.', failed.reason)
+async function parseRecord(record: SNSEventRecord, log: RootLogger) {
+    try {
+        return {
+            subject: record.Sns.Subject ?? missing('subject'),
+            timestamp: new Date(record.Sns.Timestamp),
+            messageId: record.Sns.MessageId,
+            event: await eventFromMessage(record.Sns.Message, record.Sns.MessageAttributes),
+        }
+    } catch (e) {
+        log.fatal('Error parsing event.', e)
+        throw e
     }
-    if (
-        malformedEvents.length !== 0 ||
-        notSent.length !== 0 ||
-        sent.some(e => e.status === 'fulfilled' && !e.value)
-    ) {
-        await measure(log, 'flush', flush)
-        throw new AggregateError([...malformedEvents, ...notSent], 'Error handling event.')
-    }
-
-    await measure(log.enrichReserved({ meta: handler.meta }), 'flush', flush)
 }
 
 function clientFromAttributes(attributes: SNSMessageAttributes | undefined): ClientInfo {
@@ -104,6 +114,15 @@ function clientFromAttributes(attributes: SNSMessageAttributes | undefined): Cli
         clientPort: Number(attributes.clientPort?.Value) || undefined,
         operationId: attributes.operationId?.Value,
         userAgent: attributes.userAgent?.Value,
+    }
+}
+
+function attributionFromAttributes(attributes: SNSMessageAttributes | undefined): Attribution {
+    if (!attributes?.onBehalfOfUserId?.Value) {
+        return {}
+    }
+    return {
+        onBehalfOf: claim(attributes.onBehalfOfUserId.Value, attributes.onBehalfOfOrg?.Value),
     }
 }
 
