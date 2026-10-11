@@ -107,7 +107,7 @@ export async function awsHandler(req: RequestEvent, awsContext: AwsContext): Pro
                       req.rawQueryString ? '?' + req.rawQueryString : ''
                   }`
                 : `https://${req.requestContext.domainName}${req.requestContext.path}`,
-            json: req.body ? (JSON.parse(req.body) as Json) : undefined,
+            ...requestBody(req.body, handler.config),
         },
         success,
     )
@@ -126,4 +126,21 @@ export async function awsHandler(req: RequestEvent, awsContext: AwsContext): Pro
           }
     await measure(log.enrichReserved({ meta: handler.meta }), 'flush', flush)
     return awsResult
+}
+
+// A raw-body handler verifies a signature over the bytes API Gateway received, so it is
+// handed the decoded string untouched; parsing and re-serializing would not round-trip.
+function requestBody(body: string | undefined, config: object | undefined) {
+    if (!body) {
+        return {}
+    }
+    if (wantsRawBody(config)) {
+        return { body }
+    }
+    return { json: JSON.parse(body) as Json }
+}
+
+// Read structurally until the installed host declares `rawBody` on its configuration.
+function wantsRawBody(config: object | undefined) {
+    return config !== undefined && 'rawBody' in config && config.rawBody === true
 }

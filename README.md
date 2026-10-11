@@ -9,7 +9,7 @@ Though we depend on `@movogo-io/service` we do so to implement it, not to use it
 **Main Entry Points**:
 
 - `context.ts` - Creates a Riddance context that establishes metadata, logging and event transport for Riddance functions based on what the Lambda runtime provides.
-- `http.ts` - Handles events from AWS API Gateway, sends them to Riddance HTTP handler, and maps the response back to the gateway.
+- `http.ts` - Handles events from AWS API Gateway, sends them to Riddance HTTP handler, and maps the response back to the gateway. A handler configured with `rawBody: true` is handed the request body as the string API Gateway received (base64-decoded when the gateway encoded it), never parsed, so a webhook's signature can be verified over those bytes; the Riddance host hands a test's `json` to such a handler serialized, so tests take the same path.
 - `timer.ts` - Takes an EventBridge timer/scheduled event and forwards it to Riddance timer handler.
 - `event.ts` - Takes an SNS event and forwards it to Riddance event handler.
 
