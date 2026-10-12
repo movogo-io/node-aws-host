@@ -2,13 +2,9 @@ import { put } from '@movogo-io/service/http'
 import assert from 'node:assert/strict'
 import { awsHandler } from '../http.js'
 
-// `rawBody` is read by the host at runtime; the installed host's configuration type does not
-// name it yet, so the option is passed beside one it does.
-const webhookConfig = { excludeBodyFromLogs: true, rawBody: true }
-
 // One HTTP handler per process: `awsHandler` takes the first registered.
 
-put('webhooks/*', webhookConfig, (_context, request) => ({
+put('webhooks/*', { rawBody: true }, (_context, request) => ({
     body: { seen: request.body, type: typeof request.body },
 }))
 
