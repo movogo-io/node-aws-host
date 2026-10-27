@@ -1,6 +1,6 @@
 {
   "name": "@movogo-io/aws-host",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "type": "module",
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"
@@ -32,8 +32,8 @@
     "./event": "./event.js"
   },
   "dependencies": {
-    "@movogo-io/host": "0.5.3",
-    "@movogo-io/service": "0.5.3",
+    "@movogo-io/host": "0.5.4",
+    "@movogo-io/service": "0.5.4",
     "@riddance/fetch": "0.1.5",
     "@smithy/signature-v4": "5.6.12"
   },
