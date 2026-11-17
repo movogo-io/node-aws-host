@@ -10,6 +10,7 @@ put('webhooks/*', { rawBody: true }, (context, request) => ({
         type: typeof request.body,
         step: decodeURIComponent(request.url.pathStepAt(1)),
         search: request.url.search,
+        pathname: request.url.pathname,
         headerNames: Object.keys(request.headers),
         cookie: request.headers.cookie,
         gatewaySourceIp: request.headers['x-gateway-source-ip'],
@@ -30,6 +31,7 @@ describe('http', () => {
             type: 'string',
             step: 'linear',
             search: '',
+            pathname: '/webhooks/linear',
             headerNames: ['content-type', 'x-gateway-source-ip'],
             gatewaySourceIp: '192.0.2.1',
         })
@@ -47,6 +49,7 @@ describe('http', () => {
             type: 'string',
             step: 'linear',
             search: '',
+            pathname: '/webhooks/linear',
             headerNames: ['content-type', 'x-gateway-source-ip'],
             gatewaySourceIp: '192.0.2.1',
         })
@@ -60,6 +63,7 @@ describe('http', () => {
             type: 'undefined',
             step: 'linear',
             search: '',
+            pathname: '/webhooks/linear',
             headerNames: ['content-type', 'x-gateway-source-ip'],
             gatewaySourceIp: '192.0.2.1',
         })
@@ -80,6 +84,7 @@ describe('http', () => {
             type: 'undefined',
             step: 'linear',
             search: '',
+            pathname: '/webhooks/linear',
             cookie: 'a=1; __Host-session=s1; b=2',
             headerNames: ['content-type', 'x-gateway-source-ip', 'cookie'],
             gatewaySourceIp: '192.0.2.1',
@@ -97,6 +102,7 @@ describe('http', () => {
             type: 'undefined',
             step: 'linear',
             search: '',
+            pathname: '/webhooks/linear',
             cookie: '__Host-session=s1; b=2',
             headerNames: ['content-type', 'x-gateway-source-ip', 'cookie'],
             gatewaySourceIp: '192.0.2.1',
@@ -111,6 +117,7 @@ describe('http', () => {
             type: 'undefined',
             step: 'linear',
             search: '',
+            pathname: '/webhooks/linear',
             headerNames: ['content-type', 'x-gateway-source-ip'],
             gatewaySourceIp: '192.0.2.1',
         })
@@ -126,6 +133,7 @@ describe('http', () => {
             type: 'undefined',
             step: 'linear',
             search: '',
+            pathname: '/webhooks/linear',
             headerNames: ['x-gateway-source-ip'],
             gatewaySourceIp: '192.0.2.2',
         })
@@ -149,6 +157,7 @@ describe('http', () => {
             type: 'undefined',
             step: 'linear',
             search: '',
+            pathname: '/webhooks/linear',
             headerNames: ['content-type', 'x-forwarded-for', 'x-gateway-source-ip'],
             gatewaySourceIp: '192.0.2.1',
             ip: '203.0.113.9',
@@ -169,6 +178,7 @@ describe('http', () => {
             type: 'undefined',
             step: 'linear',
             search: '',
+            pathname: '/webhooks/linear',
             headerNames: ['x-gateway-source-ip'],
             gatewaySourceIp: '192.0.2.2',
         })
@@ -185,6 +195,7 @@ describe('http', () => {
             type: 'undefined',
             step: 'linear',
             search: '',
+            pathname: '/webhooks/linear',
             headerNames: [],
         })
     })
@@ -200,6 +211,7 @@ describe('http', () => {
             type: 'undefined',
             step: 'P#A?%\\x',
             search: '?supplierId=S',
+            pathname: '/webhooks/P%23A%3F%25%5Cx',
             headerNames: ['content-type', 'x-gateway-source-ip'],
             gatewaySourceIp: '192.0.2.1',
         })
@@ -216,8 +228,57 @@ describe('http', () => {
             type: 'undefined',
             step: 'a\tb\nc%zz ',
             search: '',
+            pathname: '/webhooks/a%09b%0Ac%25zz%20',
             headerNames: ['content-type', 'x-gateway-source-ip'],
             gatewaySourceIp: '192.0.2.1',
+        })
+    })
+
+    it('keeps a # in the last step when there is no query', async () => {
+        const response = await awsHandler(event(undefined, false, '/webhooks/P#A'), awsContext())
+
+        assert.strictEqual(response.statusCode, 200)
+        assert.deepStrictEqual(JSON.parse(response.body ?? ''), {
+            type: 'undefined',
+            step: 'P#A',
+            search: '',
+            pathname: '/webhooks/P%23A',
+            headerNames: ['content-type', 'x-gateway-source-ip'],
+            gatewaySourceIp: '192.0.2.1',
+        })
+    })
+
+    it('lets a .. step collapse with the step before it and drops a lone . step', async () => {
+        const response = await awsHandler(
+            event(undefined, false, '/webhooks/./a/../linear'),
+            awsContext(),
+        )
+
+        assert.strictEqual(response.statusCode, 200)
+        assert.deepStrictEqual(JSON.parse(response.body ?? ''), {
+            type: 'undefined',
+            step: 'linear',
+            search: '',
+            pathname: '/webhooks/linear',
+            headerNames: ['content-type', 'x-gateway-source-ip'],
+            gatewaySourceIp: '192.0.2.1',
+        })
+    })
+
+    it('hands over the path of a REST API event as API Gateway gave it', async () => {
+        const response = await awsHandler(
+            restEvent({}, '192.0.2.2', '/webhooks/P%23A'),
+            awsContext(),
+        )
+
+        assert.strictEqual(response.statusCode, 200)
+        assert.deepStrictEqual(JSON.parse(response.body ?? ''), {
+            type: 'undefined',
+            step: 'P#A',
+            search: '',
+            pathname: '/webhooks/P%23A',
+            headerNames: ['x-gateway-source-ip'],
+            gatewaySourceIp: '192.0.2.2',
         })
     })
 
@@ -229,22 +290,27 @@ describe('http', () => {
             type: 'undefined',
             step: 'a bæ',
             search: '',
+            pathname: '/webhooks/a%20b%C3%A6',
             headerNames: ['content-type', 'x-gateway-source-ip'],
             gatewaySourceIp: '192.0.2.1',
         })
     })
 })
 
-function restEvent(headers: { [key: string]: string } | null, sourceIp: string | undefined) {
+function restEvent(
+    headers: { [key: string]: string } | null,
+    sourceIp: string | undefined,
+    path = '/webhooks/linear',
+) {
     return {
         resource: '/webhooks/{proxy+}',
-        path: '/webhooks/linear',
+        path,
         httpMethod: 'PUT',
         requestContext: {
             resourcePath: '/webhooks/{proxy+}',
             httpMethod: 'PUT',
             domainName: 'issues.example.com',
-            path: '/webhooks/linear',
+            path,
             protocol: 'HTTP/1.1',
             stage: 'prod',
             requestId: 'req-1',

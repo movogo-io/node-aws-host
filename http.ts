@@ -128,8 +128,10 @@ export async function awsHandler(req: RequestEvent, awsContext: AwsContext): Pro
     return awsResult
 }
 
-// API Gateway percent-decodes rawPath, repeatedly; escaped again, a step keeps a '#' or '?' and
-// decodes to what API Gateway decoded. A decoded '/' or '..' has already moved the step boundaries.
+// API Gateway decodes the path once to route it and once more into rawPath (measured on dev
+// 2026-11-17: P%23A -> 'P#A', x%2523y -> 'x#y', %25252523 -> '%2523', Q%253FR -> 'Q?R', %FF -> U+FFFD;
+// C%25D and %00 -> 400, and %2F, %2E%2E, '.' and Q%3FR -> 404, all before the Lambda). Escaped
+// again, a step decodes to what rawPath held; a decoded '/' or '..' has moved the step boundaries.
 function escapedPath(rawPath: string) {
     // eslint-disable-next-line no-control-regex
     return rawPath.replaceAll(/[\u{0}-\u{20}\u{7F}%#?\\]/gu, c => encodeURIComponent(c))
