@@ -103,7 +103,7 @@ export async function awsHandler(req: RequestEvent, awsContext: AwsContext): Pro
         {
             headers: req.headers,
             uri: isHttpRequest(req)
-                ? `https://${req.requestContext.domainName}${req.rawPath}${
+                ? `https://${req.requestContext.domainName}${escapedPath(req.rawPath)}${
                       req.rawQueryString ? '?' + req.rawQueryString : ''
                   }`
                 : `https://${req.requestContext.domainName}${req.requestContext.path}`,
@@ -126,6 +126,13 @@ export async function awsHandler(req: RequestEvent, awsContext: AwsContext): Pro
           }
     await measure(log.enrichReserved({ meta: handler.meta }), 'flush', flush)
     return awsResult
+}
+
+// API Gateway percent-decodes rawPath, repeatedly; escaped again, a step keeps a '#' or '?' and
+// decodes to what API Gateway decoded. A decoded '/' or '..' has already moved the step boundaries.
+function escapedPath(rawPath: string) {
+    // eslint-disable-next-line no-control-regex
+    return rawPath.replaceAll(/[\u{0}-\u{20}\u{7F}%#?\\]/gu, c => encodeURIComponent(c))
 }
 
 // A raw-body handler verifies a signature over the bytes API Gateway received, so it is
