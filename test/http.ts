@@ -4,12 +4,16 @@ import { awsHandler } from '../http.js'
 
 // One HTTP handler per process: `awsHandler` takes the first registered.
 
-put('webhooks/*', { rawBody: true }, (_context, request) => ({
+put('webhooks/*', { rawBody: true }, (context, request) => ({
     body: {
         seen: request.body,
         type: typeof request.body,
         step: decodeURIComponent(request.url.pathStepAt(1)),
         search: request.url.search,
+        headerNames: Object.keys(request.headers),
+        cookie: request.headers.cookie,
+        gatewaySourceIp: request.headers['x-gateway-source-ip'],
+        ip: context.client?.ip,
     },
 }))
 
@@ -26,6 +30,8 @@ describe('http', () => {
             type: 'string',
             step: 'linear',
             search: '',
+            headerNames: ['content-type', 'x-gateway-source-ip'],
+            gatewaySourceIp: '192.0.2.1',
         })
     })
 
@@ -41,6 +47,8 @@ describe('http', () => {
             type: 'string',
             step: 'linear',
             search: '',
+            headerNames: ['content-type', 'x-gateway-source-ip'],
+            gatewaySourceIp: '192.0.2.1',
         })
     })
 
@@ -52,6 +60,132 @@ describe('http', () => {
             type: 'undefined',
             step: 'linear',
             search: '',
+            headerNames: ['content-type', 'x-gateway-source-ip'],
+            gatewaySourceIp: '192.0.2.1',
+        })
+    })
+
+    it('hands the cookies of a payload 2.0 event over as one cookie header', async () => {
+        const response = await awsHandler(
+            {
+                ...event(undefined, false),
+                headers: { 'content-type': 'application/json', Cookie: 'a=1' },
+                cookies: ['__Host-session=s1', 'b=2'],
+            },
+            awsContext(),
+        )
+
+        assert.strictEqual(response.statusCode, 200)
+        assert.deepStrictEqual(JSON.parse(response.body ?? ''), {
+            type: 'undefined',
+            step: 'linear',
+            search: '',
+            cookie: 'a=1; __Host-session=s1; b=2',
+            headerNames: ['content-type', 'x-gateway-source-ip', 'cookie'],
+            gatewaySourceIp: '192.0.2.1',
+        })
+    })
+
+    it('hands over the cookies of a payload 2.0 event that has no cookie header', async () => {
+        const response = await awsHandler(
+            { ...event(undefined, false), cookies: ['__Host-session=s1', 'b=2'] },
+            awsContext(),
+        )
+
+        assert.strictEqual(response.statusCode, 200)
+        assert.deepStrictEqual(JSON.parse(response.body ?? ''), {
+            type: 'undefined',
+            step: 'linear',
+            search: '',
+            cookie: '__Host-session=s1; b=2',
+            headerNames: ['content-type', 'x-gateway-source-ip', 'cookie'],
+            gatewaySourceIp: '192.0.2.1',
+        })
+    })
+
+    it('adds no cookie header for an empty cookies list', async () => {
+        const response = await awsHandler({ ...event(undefined, false), cookies: [] }, awsContext())
+
+        assert.strictEqual(response.statusCode, 200)
+        assert.deepStrictEqual(JSON.parse(response.body ?? ''), {
+            type: 'undefined',
+            step: 'linear',
+            search: '',
+            headerNames: ['content-type', 'x-gateway-source-ip'],
+            gatewaySourceIp: '192.0.2.1',
+        })
+    })
+
+    it('handles a REST API test invocation without headers', async () => {
+        // API Gateway's test invocation sends headers: null.
+        // eslint-disable-next-line unicorn/no-null
+        const response = await awsHandler(restEvent(null, '192.0.2.2'), awsContext())
+
+        assert.strictEqual(response.statusCode, 200)
+        assert.deepStrictEqual(JSON.parse(response.body ?? ''), {
+            type: 'undefined',
+            step: 'linear',
+            search: '',
+            headerNames: ['x-gateway-source-ip'],
+            gatewaySourceIp: '192.0.2.2',
+        })
+    })
+
+    it('replaces a gateway source address the client sent, and keeps the client address from X-Forwarded-For', async () => {
+        const response = await awsHandler(
+            {
+                ...event(undefined, false),
+                headers: {
+                    'content-type': 'application/json',
+                    'x-gateway-source-ip': '198.51.100.7',
+                    'x-forwarded-for': '203.0.113.9',
+                },
+            },
+            awsContext(),
+        )
+
+        assert.strictEqual(response.statusCode, 200)
+        assert.deepStrictEqual(JSON.parse(response.body ?? ''), {
+            type: 'undefined',
+            step: 'linear',
+            search: '',
+            headerNames: ['content-type', 'x-forwarded-for', 'x-gateway-source-ip'],
+            gatewaySourceIp: '192.0.2.1',
+            ip: '203.0.113.9',
+        })
+    })
+
+    it('replaces a gateway source address in any case on a REST API event', async () => {
+        const response = await awsHandler(
+            restEvent(
+                { 'X-Gateway-Source-Ip': '198.51.100.7', 'x-gateway-source-ip': '198.51.100.8' },
+                '192.0.2.2',
+            ),
+            awsContext(),
+        )
+
+        assert.strictEqual(response.statusCode, 200)
+        assert.deepStrictEqual(JSON.parse(response.body ?? ''), {
+            type: 'undefined',
+            step: 'linear',
+            search: '',
+            headerNames: ['x-gateway-source-ip'],
+            gatewaySourceIp: '192.0.2.2',
+        })
+    })
+
+    it('removes a gateway source address the client sent when API Gateway gave none', async () => {
+        const response = await awsHandler(
+            restEvent({ 'x-gateway-source-ip': '198.51.100.7' }, undefined),
+            awsContext(),
+        )
+
+        assert.strictEqual(response.statusCode, 200)
+        assert.deepStrictEqual(JSON.parse(response.body ?? ''), {
+            type: 'undefined',
+            step: 'linear',
+            search: '',
+            headerNames: [],
         })
     })
 
@@ -66,6 +200,8 @@ describe('http', () => {
             type: 'undefined',
             step: 'P#A?%\\x',
             search: '?supplierId=S',
+            headerNames: ['content-type', 'x-gateway-source-ip'],
+            gatewaySourceIp: '192.0.2.1',
         })
     })
 
@@ -80,6 +216,8 @@ describe('http', () => {
             type: 'undefined',
             step: 'a\tb\nc%zz ',
             search: '',
+            headerNames: ['content-type', 'x-gateway-source-ip'],
+            gatewaySourceIp: '192.0.2.1',
         })
     })
 
@@ -91,9 +229,35 @@ describe('http', () => {
             type: 'undefined',
             step: 'a bæ',
             search: '',
+            headerNames: ['content-type', 'x-gateway-source-ip'],
+            gatewaySourceIp: '192.0.2.1',
         })
     })
 })
+
+function restEvent(headers: { [key: string]: string } | null, sourceIp: string | undefined) {
+    return {
+        resource: '/webhooks/{proxy+}',
+        path: '/webhooks/linear',
+        httpMethod: 'PUT',
+        requestContext: {
+            resourcePath: '/webhooks/{proxy+}',
+            httpMethod: 'PUT',
+            domainName: 'issues.example.com',
+            path: '/webhooks/linear',
+            protocol: 'HTTP/1.1',
+            stage: 'prod',
+            requestId: 'req-1',
+            identity: { accountId: '123456789012', sourceIp, userAgent: 'test/1' },
+        },
+        headers,
+        multiValueHeaders: {},
+        multiValueQueryStringParameters: {},
+        pathParameters: {},
+        stageVariables: {},
+        isBase64Encoded: false,
+    }
+}
 
 function event(
     body: string | undefined,
@@ -107,7 +271,6 @@ function event(
         rawPath,
         rawQueryString,
         headers: { 'content-type': 'application/json' },
-        cookies: {},
         queryStringParameters: {},
         pathParameters: {},
         stageVariables: {},

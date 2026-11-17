@@ -35,11 +35,11 @@ type RestRequestEvent = {
         requestId: string
         identity: {
             accountId: string
-            sourceIp: string
+            sourceIp?: string
             userAgent: string
         }
     }
-    headers: { [key: string]: string }
+    headers: { [key: string]: string } | null
     multiValueHeaders: { [key: string]: string[] }
     multiValueQueryStringParameters: { [key: string]: string[] }
 } & CommonRequestEvent
@@ -50,7 +50,7 @@ type HttpRequestEvent = {
     rawPath: string
     rawQueryString: string
     headers: { [key: string]: string }
-    cookies: { [key: string]: string }
+    cookies?: string[]
     queryStringParameters: { [key: string]: string }
     requestContext: {
         accountId: string
@@ -61,7 +61,7 @@ type HttpRequestEvent = {
             method: string
             path: string
             protocol: string
-            sourceIp: string
+            sourceIp?: string
             userAgent: string
         }
         requestId: string
@@ -74,7 +74,7 @@ type HttpRequestEvent = {
 
 type RequestEvent = HttpRequestEvent | RestRequestEvent
 
-function isHttpRequest(request: RequestEvent) {
+function isHttpRequest(request: RequestEvent): request is HttpRequestEvent {
     return 'version' in request
 }
 
@@ -87,7 +87,7 @@ export async function awsHandler(req: RequestEvent, awsContext: AwsContext): Pro
         awsContext,
         { default: 15 },
         req.stageVariables,
-        clientFromHeaders(req.headers),
+        clientFromHeaders(req.headers ?? undefined),
         handler.config,
         handler.meta,
         awsContext.invokedFunctionArn,
@@ -101,7 +101,7 @@ export async function awsHandler(req: RequestEvent, awsContext: AwsContext): Pro
         context,
         handler,
         {
-            headers: req.headers,
+            headers: requestHeaders(req),
             uri: isHttpRequest(req)
                 ? `https://${req.requestContext.domainName}${escapedPath(req.rawPath)}${
                       req.rawQueryString ? '?' + req.rawQueryString : ''
@@ -133,6 +133,37 @@ export async function awsHandler(req: RequestEvent, awsContext: AwsContext): Pro
 function escapedPath(rawPath: string) {
     // eslint-disable-next-line no-control-regex
     return rawPath.replaceAll(/[\u{0}-\u{20}\u{7F}%#?\\]/gu, c => encodeURIComponent(c))
+}
+
+// A client may send x-gateway-source-ip itself, so it is always replaced or removed.
+// Payload 2.0 moves the Cookie header out of headers and into cookies.
+function requestHeaders(req: RequestEvent) {
+    const cookies = isHttpRequest(req) ? (req.cookies ?? []) : []
+    const replaced = cookies.length === 0 ? [gatewaySourceIp] : [gatewaySourceIp, 'cookie']
+    const sent = Object.entries(req.headers ?? {})
+    const headers = Object.fromEntries(
+        sent.filter(([name]) => !replaced.includes(name.toLowerCase())),
+    )
+    const ip = sourceIp(req)
+    if (ip) {
+        headers[gatewaySourceIp] = ip
+    }
+    if (cookies.length !== 0) {
+        headers.cookie = [
+            ...sent.filter(([name]) => name.toLowerCase() === 'cookie').map(([, value]) => value),
+            ...cookies,
+        ].join('; ')
+    }
+    return headers
+}
+
+const gatewaySourceIp = 'x-gateway-source-ip'
+
+function sourceIp(req: RequestEvent) {
+    if (isHttpRequest(req)) {
+        return req.requestContext.http.sourceIp
+    }
+    return req.requestContext.identity.sourceIp
 }
 
 // A raw-body handler verifies a signature over the bytes API Gateway received, so it is
